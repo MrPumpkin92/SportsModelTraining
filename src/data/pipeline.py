@@ -1,4 +1,4 @@
-"""
+﻿"""
 NBA Data Ingestion Pipeline
 Pulls last 60 days of player game logs from nba_api.
 Respects out_player_ids.txt written by preflight.py.
@@ -13,13 +13,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from nba_api.stats.endpoints import commonallplayers, playergamelogs
+from nba_api.stats.endpoints import leaguegamelog
 
 from src.data.preflight import load_out_player_ids
 
 DATA_DIR = Path("data/local")
 RAW_DIR = DATA_DIR / "raw"
 LOG_PATH = Path("logs/data_pipeline.log")
+
+# Retry settings for the single bulk NBA API request.
+REQUEST_DELAY = 3
+MAX_RETRIES = 3
+
+
+def _current_nba_season() -> str:
+    """Return season string like '2025-26' based on current date."""
+    today = datetime.today()
+    start_year = today.year if today.month >= 10 else today.year - 1
+    end_year_short = (start_year + 1) % 100
+    return f"{start_year}-{end_year_short:02d}"
 
 
 def _setup_logging() -> None:
@@ -43,29 +55,56 @@ def fetch_all_players_last_60_days() -> pd.DataFrame:
     else:
         logging.warning("No out_player_ids found. Continuing with all players.")
 
-    all_players = commonallplayers.CommonAllPlayers(is_only_current_season=1)
-    time.sleep(1)
-    players_df = all_players.get_data_frames()[0]
+    date_from = (datetime.today() - timedelta(days=60)).strftime("%m/%d/%Y")
+    date_to = datetime.today().strftime("%m/%d/%Y")
+    season = _current_nba_season()
 
-    frames: list[pd.DataFrame] = []
-    for _, player in players_df.iterrows():
-        pid = int(player["PERSON_ID"])
+    logs_df = pd.DataFrame()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = leaguegamelog.LeagueGameLog(
+                player_or_team_abbreviation="P",
+                season=season,
+                season_type_all_star="Regular Season",
+                date_from_nullable=date_from,
+                date_to_nullable=date_to,
+            )
+            logs_df = response.get_data_frames()[0]
+            break
+        except Exception as exc:
+            backoff = REQUEST_DELAY * (2 ** attempt)
+            if attempt < MAX_RETRIES:
+                logging.warning(
+                    "[pipeline] Bulk pull attempt %d/%d failed (%s) -- retrying in %ds",
+                    attempt, MAX_RETRIES, exc, backoff,
+                )
+                time.sleep(backoff)
+            else:
+                logging.error(
+                    "[pipeline] Bulk pull failed after %d attempts: %s",
+                    MAX_RETRIES, exc,
+                )
+                return pd.DataFrame()
 
-        if pid in out_ids:
-            logging.info("[pipeline] Skipping %s (Out/Inactive today)", player["DISPLAY_FIRST_LAST"])
-            continue
+    if logs_df.empty:
+        logging.warning("[pipeline] Bulk pull returned no rows")
+        return logs_df
 
-        logs = playergamelogs.PlayerGameLogs(
-            player_id_nullable=pid,
-            date_from_nullable=(datetime.today() - timedelta(days=60)).strftime("%m/%d/%Y"),
-            date_to_nullable=datetime.today().strftime("%m/%d/%Y"),
-        )
-        time.sleep(1)
-        df = logs.get_data_frames()[0]
-        if not df.empty:
-            frames.append(df)
+    logs_df["PLAYER_ID"] = pd.to_numeric(logs_df["PLAYER_ID"], errors="coerce")
+    logs_df = logs_df.dropna(subset=["PLAYER_ID"]).copy()
+    logs_df["PLAYER_ID"] = logs_df["PLAYER_ID"].astype(int)
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    before = len(logs_df)
+    if out_ids:
+        logs_df = logs_df[~logs_df["PLAYER_ID"].isin(out_ids)].copy()
+    removed = before - len(logs_df)
+    logging.info(
+        "[pipeline] Pulled %s rows in one request; filtered out %s rows for Out/Inactive players",
+        before,
+        removed,
+    )
+
+    return logs_df
 
 
 def run_pipeline() -> None:

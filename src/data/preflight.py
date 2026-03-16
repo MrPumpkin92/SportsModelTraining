@@ -327,6 +327,23 @@ def run_preflight() -> None:
     entries = build_today_roster(games, injury_map)
 
     save_outputs(entries, injury_map, games)
+
+    # If a saved nbainjuries report already exists, re-apply it immediately
+    # so statuses from the last injury_scraper run are not lost.
+    from pathlib import Path as _Path
+    _nba_injuries_file = _Path("data/local/injury_report_nbainjuries.json")
+    if _nba_injuries_file.exists():
+        try:
+            from src.data.injury_scraper import sync_from_saved_file
+            n_updated, n_newly_out = sync_from_saved_file()
+            if n_updated:
+                print(
+                    f"[preflight] Re-applied nbainjuries data: "
+                    f"{n_updated} status update(s), {n_newly_out} newly Out."
+                )
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[preflight] Warning: could not re-apply nbainjuries data: {_exc}")
+
     print("\n[preflight] Pre-flight complete. Pipeline may now run.\n")
 
 
