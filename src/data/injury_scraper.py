@@ -310,6 +310,45 @@ def merge_into_today_roster(injury_map: dict) -> tuple:
     return n_updated, n_newly_out
 
 
+def sync_from_saved_file() -> tuple:
+    """
+    Re-reads the already-saved injury_report_nbainjuries.json and re-applies
+    it to today_roster.json without re-fetching from the API.
+
+    Useful when injury_report_nbainjuries.json was updated externally (e.g. by
+    the file watcher or a manual edit) and today_roster.json needs to catch up.
+
+    Returns: (n_updated, n_newly_out)
+    """
+    if not RAW_INJURY_PATH.exists():
+        logger.error(
+            "[injury_scraper] %s not found — run injury_scraper first.",
+            RAW_INJURY_PATH,
+        )
+        return 0, 0
+
+    try:
+        records = json.loads(RAW_INJURY_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("[injury_scraper] Could not read %s: %s", RAW_INJURY_PATH, exc)
+        return 0, 0
+
+    if not records:
+        logger.warning("[injury_scraper] %s is empty — nothing to sync.", RAW_INJURY_PATH)
+        return 0, 0
+
+    injury_map = build_injury_map(records)
+    n_updated, n_newly_out = merge_into_today_roster(injury_map)
+    total_out = refresh_out_player_ids()
+
+    logger.info(
+        "[injury_scraper] sync_from_saved_file: %d status changes, "
+        "%d newly Out, %d total excluded from pipeline",
+        n_updated, n_newly_out, total_out,
+    )
+    return n_updated, n_newly_out
+
+
 def refresh_out_player_ids() -> int:
     """
     Re-reads today_roster.json and rewrites out_player_ids.txt to reflect any
@@ -405,7 +444,7 @@ def run_injury_scraper() -> None:
     # Step 3: Save raw output
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     RAW_INJURY_PATH.write_text(json.dumps(records, indent=2), encoding="utf-8")
-    print(f"[injury_scraper] Saved {len(records)} raw records → {RAW_INJURY_PATH}")
+    print(f"[injury_scraper] Saved {len(records)} raw records -> {RAW_INJURY_PATH}")
 
     # Step 4: Build map and merge
     injury_map = build_injury_map(records)
