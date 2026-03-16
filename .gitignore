@@ -209,3 +209,6 @@ __marimo__/
 # Sports Model Training — local data & logs (never commit)
 data/local/
 logs/
+
+# nbainjuries raw output
+data/local/injury_report_nbainjuries.json
