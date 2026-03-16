@@ -1,0 +1,13 @@
+model:
+  # Set to "neural_network", "topology", or "field_theory" to skip auto-selection
+  force_architecture: null
+
+  train_test_split: 0.8
+
+  # Last N days of raw data are held out as the validation set
+  validation_window_days: 14
+
+  # Regression targets evaluated for RMSE-based selection
+  target_columns: [PTS, REB, AST]
+
+  random_seed: 42
